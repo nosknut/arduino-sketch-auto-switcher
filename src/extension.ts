@@ -1,6 +1,5 @@
 import * as TOML from '@iarna/toml';
-import { existsSync } from 'fs';
-import { basename, join, parse, sep as pathSeparator, relative } from 'path';
+import { basename, dirname, sep as pathSeparator, relative } from 'path';
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
@@ -14,59 +13,83 @@ type WokWiToml = {
 };
 
 function getForwardSlashPath(path: string) {
-	return path.split(pathSeparator).join('/');
+	return path
+		.split(pathSeparator)
+		.join('/');
 }
 
 function getConfig() {
 	return vscode.workspace.getConfiguration("arduino-sketch-auto-switcher");
 }
 
-async function deleteWorkspaceFile(path: string) {
-	await vscode.workspace.fs.delete(vscode.Uri.file(path));
+async function deleteWorkspaceFile(uri: vscode.Uri) {
+	await vscode.workspace.fs.delete(uri);
 }
 
-async function deleteFirmware() {
-	const buildTarget = await getArduinoBuildTarget();
-	const firmware = await findWorkspaceFile(join(buildTarget, "*.hex"));
-	const elf = await findWorkspaceFile(join(buildTarget, "*.elf"));
+function getHumanReadableWorkspacePath(uri: vscode.Uri) {
+	return vscode.workspace.asRelativePath(uri);
+	// getForwardSlashPath(join('.', vscode.workspace.asRelativePath(uri)));
+}
+
+async function deleteFirmware(buildTargetUri: vscode.Uri) {
+	const firmware = await findWorkspaceFile(
+		new vscode.RelativePattern(buildTargetUri, "*.hex")
+	);
+	const elf = await findWorkspaceFile(
+		new vscode.RelativePattern(buildTargetUri, "*.elf")
+	);
 
 	if (firmware) {
-		await deleteWorkspaceFile(firmware.fsPath);
+		await deleteWorkspaceFile(firmware);
 	}
 
 	if (elf) {
-		await deleteWorkspaceFile(elf.fsPath);
+		await deleteWorkspaceFile(elf);
 	}
 }
 
-async function writeWorkspaceFile(path: string, content: string) {
-	await vscode.workspace.fs.writeFile(vscode.Uri.file(path), Buffer.from(content));
+async function writeWorkspaceFile(uri: vscode.Uri, content: string) {
+	await vscode.workspace.fs.writeFile(uri, Buffer.from(content));
 }
 
-async function writeJsonWorkspaceFile(path: string, content: object) {
-	await writeWorkspaceFile(path, JSON.stringify(content, null, 4));
+async function writeJsonWorkspaceFile(uri: vscode.Uri, content: object) {
+	await writeWorkspaceFile(uri, JSON.stringify(content, null, 4));
 }
 
-async function getFirmwarePaths(sketchPath: string) {
-	const sketchName = basename(sketchPath);
-	const sketchDirPath = parse(sketchPath).dir;
-	const relativeSketchDirPath = vscode.workspace.asRelativePath(sketchDirPath);
-	const relativeBuildPath = vscode.workspace.asRelativePath(await getArduinoBuildTarget());
+function getWorkspaceFileName(uri: vscode.Uri) {
+	return basename(uri.toString());
+}
+
+function getRelativePath(from: vscode.Uri, to: vscode.Uri) {
+
+	const rel1 = vscode.workspace.asRelativePath(from);
+	const rel2 = vscode.workspace.asRelativePath(to);
+
+	const rel3 = getForwardSlashPath(relative(
+		rel1,
+		rel2,
+	));
+	return rel3;
+}
+
+async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri) {
+	const sketchName = getWorkspaceFileName(sketchUri);
+	const sketchDirUri = getWorkspaceFileDirectory(sketchUri);
 
 	return {
-		firmware: getForwardSlashPath(relative(
-			relativeSketchDirPath,
-			join(relativeBuildPath, `${sketchName}.hex`)
-		)),
-		elf: getForwardSlashPath(relative(
-			relativeSketchDirPath,
-			join(relativeBuildPath, `${sketchName}.elf`)
-		)),
+		hexPath: getRelativePath(
+			sketchDirUri,
+			vscode.Uri.joinPath(buildTargetUri, `${sketchName}.hex`),
+		),
+		elfPath: getRelativePath(
+			sketchDirUri,
+			vscode.Uri.joinPath(buildTargetUri, `${sketchName}.elf`),
+		),
 	};
 }
 
-async function updateToml(tomlFilePath: string, hexFilePath: string, elfFilePath: string) {
-	const tomlFile = await vscode.workspace.openTextDocument(tomlFilePath);
+async function updateToml(tomlFileUri: vscode.Uri, hexFilePath: string, elfFilePath: string) {
+	const tomlFile = await vscode.workspace.openTextDocument(tomlFileUri);
 	try {
 		const toml = TOML.parse(tomlFile.getText()) as WokWiToml;
 		if (toml.wokwi) {
@@ -76,7 +99,7 @@ async function updateToml(tomlFilePath: string, hexFilePath: string, elfFilePath
 			const updated = TOML.stringify(toml);
 
 			if (updated !== original) {
-				await writeWorkspaceFile(tomlFilePath, TOML.stringify(toml));
+				await writeWorkspaceFile(tomlFileUri, TOML.stringify(toml));
 			}
 		}
 	} catch (e) {
@@ -84,18 +107,20 @@ async function updateToml(tomlFilePath: string, hexFilePath: string, elfFilePath
 	}
 }
 
-async function findWorkspaceFile(pattern: string) {
+async function findWorkspaceFile(pattern: vscode.GlobPattern) {
 	const files = await vscode.workspace.findFiles(pattern);
 
-	if (files.length < 0) {
+	if (files.length === 0) {
 		return;
 	}
 
 	return files[0];
 }
 
-async function getArduinoConfigUri() {
-	return await findWorkspaceFile("**/arduino.json");
+async function getArduinoConfigUri(workspaceUri: vscode.Uri) {
+	return await findWorkspaceFile(
+		new vscode.RelativePattern(workspaceUri, "**/arduino.json")
+	);
 }
 
 async function showArduinoSetup() {
@@ -133,56 +158,39 @@ async function showArduinoSetup() {
 	}
 }
 
-async function getArduinoConfig() {
-	const arduinoJsonFileUri = await getArduinoConfigUri();
+type ArduinoConfig = {
+	output: string,
+	sketch: string,
+};
 
-	if (!arduinoJsonFileUri) {
-		return;
-	}
-
-	// read the file contents as json
-	const arduinoJsonFile = await vscode.workspace.openTextDocument(arduinoJsonFileUri);
-
-	return JSON.parse(arduinoJsonFile.getText());
+async function getWorkspaceJsonFile<T>(uri: vscode.Uri) {
+	const doc = await vscode.workspace.openTextDocument(uri);
+	return JSON.parse(doc.getText()) as T;
 }
 
 /**
  * Updates the default Arduino output path in arduino.json if it is not set
  * @returns true if the output path was updated
  */
-async function setDefaultArduinoOutput() {
-	const arduinoConfig = await getArduinoConfig();
-
+async function setDefaultArduinoOutput(arduinoConfig: ArduinoConfig) {
 	if (!arduinoConfig.output) {
-		arduinoConfig.output = getConfig().get("defaultArduinoOutput");
+		arduinoConfig.output = getConfig().get("defaultArduinoOutput") || "";
 		vscode.window.showInformationMessage('Arduino Sketch Auto Switcher: Updated build output path in arduino.json');
-		await setArduinoConfig(arduinoConfig);
 		return true;
 	}
 
 	return false;
 }
 
-async function getArduinoBuildTarget() {
-	await setDefaultArduinoOutput();
-	const arduinoConfig = await getArduinoConfig();
-	return arduinoConfig.output;
+function getArduinoBuildTargetUri(workspaceUri: vscode.Uri, arduinoConfig: ArduinoConfig) {
+	return vscode.Uri.joinPath(
+		workspaceUri,
+		arduinoConfig.output,
+	);
 }
 
-async function setArduinoConfig(config: any) {
-	const arduinoJsonFileUri = await getArduinoConfigUri();
-
-	if (!arduinoJsonFileUri) {
-		return;
-	}
-
-	await writeJsonWorkspaceFile(arduinoJsonFileUri.fsPath, config);
-}
-
-async function sketchIsSelected(path: string) {
-	const sketchPath = vscode.workspace.asRelativePath(path);
-	const arduinoConfig = await getArduinoConfig();
-	return arduinoConfig.sketch === sketchPath;
+async function sketchIsSelected(uri: vscode.Uri, arduinoConfig: ArduinoConfig) {
+	return arduinoConfig.sketch === vscode.workspace.asRelativePath(uri);
 }
 
 async function verifySketch() {
@@ -202,30 +210,33 @@ async function runWithoutSetting(configuration: string, setting: string, callbac
 	}
 }
 
-async function selectArduinoSketch(path: string, verify: boolean, verifyWithoutChanges: boolean) {
+async function selectArduinoSketch(
+	uri: vscode.Uri,
+	verify: boolean,
+	verifyWithoutChanges: boolean,
+	arduinoConfigUri: vscode.Uri,
+	arduinoConfig: ArduinoConfig,
+) {
 	const status = {
 		verified: false,
 		updatedSketch: false,
 		updatedOutput: false,
 	};
 
-	if (!path.endsWith('.ino')) {
+	if (!fileIsSketch(uri)) {
 		vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: Selected file is not an Arduino sketch');
 		return status;
 	}
 
-	const sketchPath = vscode.workspace.asRelativePath(path);
-	const sketchAlredySelected = await sketchIsSelected(path);
+	const sketchAlreadySelected = await sketchIsSelected(uri, arduinoConfig);
 
-	const arduinoConfig = await getArduinoConfig();
-
-	if (!sketchAlredySelected) {
+	if (!sketchAlreadySelected) {
 		status.updatedSketch = true;
-		arduinoConfig.sketch = sketchPath;
-		vscode.window.showInformationMessage(`Arduino Sketch Auto Switcher: Selected ${basename(path)}`);
+		arduinoConfig.sketch = getHumanReadableWorkspacePath(uri);
+		// vscode.window.showInformationMessage(`Arduino Sketch Auto Switcher: Selected ${getWorkspaceFileName(uri)}`);
 	}
 
-	if (await setDefaultArduinoOutput()) {
+	if (await setDefaultArduinoOutput(arduinoConfig)) {
 		status.updatedOutput = true;
 	}
 
@@ -237,7 +248,7 @@ async function selectArduinoSketch(path: string, verify: boolean, verifyWithoutC
 		// sketch despite the setting being set to false
 		// Force the Arduino Extension to not analyze the sketch on change
 		await runWithoutSetting('arduino', 'analyzeOnSettingChange', async () => {
-			await setArduinoConfig(arduinoConfig);
+			await writeJsonWorkspaceFile(arduinoConfigUri, arduinoConfig);
 		});
 	}
 
@@ -251,35 +262,50 @@ async function selectArduinoSketch(path: string, verify: boolean, verifyWithoutC
 	return status;
 }
 
-async function getSketchSimFilePaths(sketchPath: string) {
-	const sketchDir = parse(sketchPath).dir;
-	const toml = join(sketchDir, "wokwi.toml");
-	const diagram = join(sketchDir, "diagram.json");
+function getWorkspaceFileDirectory(uri: vscode.Uri) {
+	return vscode.Uri.parse(dirname(uri.toString()));
+}
+
+async function getSketchSimFileUris(sketchUri: vscode.Uri) {
+	const sketchDir = getWorkspaceFileDirectory(sketchUri);
+	const tomlUri = vscode.Uri.joinPath(sketchDir, "wokwi.toml");
+	const diagramUri = vscode.Uri.joinPath(sketchDir, "diagram.json");
 	return {
-		toml,
-		diagram,
+		tomlUri,
+		diagramUri,
 	};
 }
 
-async function sketchHasSimulation(sketchPath: string) {
-	const { toml, diagram } = await getSketchSimFilePaths(sketchPath);
-	const tomlExists = existsSync(toml);
-	const diagramExists = existsSync(diagram);
+async function workspaceFileExists(uri: vscode.Uri) {
+	return !!await findWorkspaceFile(vscode.workspace.asRelativePath(uri));
+}
+
+async function sketchHasSimulation(sketchUri: vscode.Uri) {
+	const { tomlUri, diagramUri } = await getSketchSimFileUris(sketchUri);
+	const tomlExists = await workspaceFileExists(tomlUri);
+	const diagramExists = await workspaceFileExists(diagramUri);
 	return tomlExists || diagramExists;
 }
 
-async function configureWokwiTomlFirmwarePaths(sketchPath: string) {
-	const exists = await sketchHasSimulation(sketchPath);
+async function configureWokwiTomlFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri) {
+	const exists = await sketchHasSimulation(sketchUri);
 	if (!exists) {
 		return;
 	}
 
-	const { toml } = await getSketchSimFilePaths(sketchPath);
+	const { tomlUri } = await getSketchSimFileUris(sketchUri);
 
-	const firmwarePaths = await getFirmwarePaths(sketchPath);
-	await updateToml(toml,
-		firmwarePaths.firmware,
-		firmwarePaths.elf,
+	const firmwarePaths = await getFirmwarePaths(buildTargetUri, sketchUri);
+
+	if (!firmwarePaths) {
+		return;
+	}
+
+	const { hexPath, elfPath } = firmwarePaths;
+	await updateToml(
+		tomlUri,
+		hexPath,
+		elfPath,
 	);
 
 	// Using a 3 second timeout to give the Arduino extension
@@ -296,6 +322,10 @@ async function configureWokwiTomlFirmwarePaths(sketchPath: string) {
 			await vscode.commands.executeCommand('wokwi-vscode.selectConfigFile');
 		}
 	}, 3000);
+}
+
+function fileIsSketch(uri: vscode.Uri) {
+	return uri.path.endsWith('.ino');
 }
 
 const templates = {
@@ -576,6 +606,86 @@ const templates = {
 	},
 };
 
+async function requestDiagramTemplateFromUser() {
+	const sketchTypes = {
+		uno: "UNO",
+		uno1Button: "UNO with 1 button",
+		uno1Led: "UNO with 1 LED",
+		uno1Button1Led: "UNO with 1 button and 1 LED",
+		uno2Buttons2Leds: "UNO with 2 buttons and 2 LEDs",
+	};
+
+	const sketchType = await vscode.window.showQuickPick([
+		{ label: sketchTypes.uno, description: sketchTypes.uno, },
+		{ label: sketchTypes.uno1Button, description: sketchTypes.uno1Button, },
+		{ label: sketchTypes.uno1Led, description: sketchTypes.uno1Led, },
+		{ label: sketchTypes.uno1Button1Led, description: sketchTypes.uno1Button1Led, },
+		{ label: sketchTypes.uno2Buttons2Leds, description: sketchTypes.uno2Buttons2Leds, },
+	], {
+		placeHolder: "Select a sketch type",
+		matchOnDescription: true,
+	});
+
+	if (!sketchType) {
+		return;
+	}
+
+	const diagrams = {
+		[sketchTypes.uno]: templates.uno,
+		[sketchTypes.uno1Button]: templates.uno1Button,
+		[sketchTypes.uno1Led]: templates.uno1Led,
+		[sketchTypes.uno1Button1Led]: templates.uno1Button1Led,
+		[sketchTypes.uno2Buttons2Leds]: templates.uno2Buttons2Leds,
+	};
+
+	const diagram = diagrams[sketchType.label];
+
+	if (!diagram) {
+		vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: Unable to find diagram template');
+		return;
+	}
+
+	return diagram;
+}
+
+function getWorkspaceUri(sketchUri: vscode.Uri) {
+	const workspaceFolder = vscode.workspace.getWorkspaceFolder(sketchUri);
+	if (!workspaceFolder) {
+		return;
+	}
+	return workspaceFolder.uri;
+}
+
+async function standardSetup(sketchUri: vscode.Uri) {
+
+	if (!fileIsSketch(sketchUri)) {
+		return;
+	}
+
+	const workspaceUri = getWorkspaceUri(sketchUri);
+
+	if (!workspaceUri) {
+		return;
+	}
+
+	const arduinoConfigUri = await getArduinoConfigUri(workspaceUri);
+
+	if (!arduinoConfigUri) {
+		showArduinoSetup();
+		return;
+	}
+
+	const arduinoConfig = await getWorkspaceJsonFile<ArduinoConfig>(arduinoConfigUri);
+
+	const buildTargetUri = getArduinoBuildTargetUri(workspaceUri, arduinoConfig);
+
+	return {
+		arduinoConfigUri,
+		arduinoConfig,
+		buildTargetUri,
+	};
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -597,32 +707,41 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument(async (e) => {
-			const sketchPath = e?.fileName;
+			const sketchUri = e?.uri;
 
-			if (!sketchPath) {
+			if (!sketchUri) {
 				return;
 			}
 
-			if (!sketchPath.endsWith('.ino')) {
+			const setupResult = await standardSetup(sketchUri);
+
+			if (!setupResult) {
 				return;
 			}
 
-			if (!await getArduinoConfigUri()) {
-				showArduinoSetup();
-				return;
-			}
+			const {
+				arduinoConfigUri,
+				arduinoConfig,
+				buildTargetUri,
+			} = setupResult;
 
 			if (getConfig().get("autoSelectSketchOnSave")) {
 				const {
 					updatedSketch,
-				} = await selectArduinoSketch(sketchPath, !!getConfig().get("autoVerifySketchOnSave"), true);
+				} = await selectArduinoSketch(
+					sketchUri,
+					!!getConfig().get("autoVerifySketchOnSave"),
+					true,
+					arduinoConfigUri,
+					arduinoConfig,
+				);
 
 				if (updatedSketch && getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
-					await configureWokwiTomlFirmwarePaths(sketchPath);
+					await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 				}
 
 				if (getConfig().get("autoRestartSimulationOnSave")) {
-					if (await sketchHasSimulation(sketchPath)) {
+					if (await sketchHasSimulation(sketchUri)) {
 						await vscode.commands.executeCommand('wokwi-vscode.start');
 					}
 				}
@@ -633,28 +752,37 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.window.onDidChangeActiveTextEditor(async (e) => {
-			const sketchPath = e?.document?.fileName;
+			const sketchUri = e?.document?.uri;
 
-			if (!sketchPath) {
+			if (!sketchUri) {
 				return;
 			}
 
-			if (!sketchPath.endsWith('.ino')) {
+			const setupResult = await standardSetup(sketchUri);
+
+			if (!setupResult) {
 				return;
 			}
 
-			if (!await getArduinoConfigUri()) {
-				showArduinoSetup();
-				return;
-			}
+			const {
+				arduinoConfigUri,
+				arduinoConfig,
+				buildTargetUri,
+			} = setupResult;
 
 			if (getConfig().get("autoSelectSketchOnOpen")) {
 				const {
 					updatedSketch,
-				} = await selectArduinoSketch(sketchPath, !!getConfig().get("autoCompileSketchOnOpen"), false);
+				} = await selectArduinoSketch(
+					sketchUri,
+					!!getConfig().get("autoCompileSketchOnOpen"),
+					false,
+					arduinoConfigUri,
+					arduinoConfig,
+				);
 
 				if (updatedSketch && getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
-					await configureWokwiTomlFirmwarePaths(sketchPath);
+					await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 				}
 			}
 
@@ -663,31 +791,25 @@ export function activate(context: vscode.ExtensionContext) {
 	// The command has been defined in the package.json file
 	// Now provide the implementation of the command with registerCommand
 	// The commandId parameter must match the command field in package.json
-	let disposable = vscode.commands.registerCommand('arduino-sketch-auto-switcher.newWokwiSimulation', async (args: any) => {
+	let disposable = vscode.commands.registerCommand('arduino-sketch-auto-switcher.newWokwiSimulation', async (uriArg: vscode.Uri) => {
 		// The code you place here will be executed every time your command is executed
 
-		if (!await getArduinoConfigUri()) {
-			showArduinoSetup();
-			return;
-		}
-
 		const activeSketch = vscode.window.activeTextEditor?.document.uri;
+		const usingActiveSketch = !uriArg;
+		const sketchUri = uriArg || activeSketch;
 
-		if (!args && !activeSketch) {
+		if (usingActiveSketch && !activeSketch) {
 			vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: No sketch is open');
 			return;
 		}
 
-		const sketchPath = join(args?.path || activeSketch?.fsPath);
-
-		const usingActiveSketch = !args?.path;
-
-		if (usingActiveSketch && !sketchPath.endsWith('.ino')) {
+		if (usingActiveSketch && !fileIsSketch(sketchUri)) {
 			vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: You must open a .ino file to create a simulation');
 			return;
 		}
 
-		if (await sketchHasSimulation(sketchPath)) {
+		const alreadyHasSimulation = await sketchHasSimulation(sketchUri);
+		if (alreadyHasSimulation) {
 			const shouldOverwrite = await vscode.window.showWarningMessage(
 				'This sketch already has a simulation. Would you like to overwrite it?',
 				'Yes',
@@ -699,64 +821,50 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		}
 
-		const firmwarePaths = await getFirmwarePaths(sketchPath);
+		const setupResult = await standardSetup(sketchUri);
+
+		if (!setupResult) {
+			return;
+		}
+
+		const {
+			arduinoConfigUri,
+			arduinoConfig,
+			buildTargetUri,
+		} = setupResult;
+
+		const { hexPath, elfPath } = await getFirmwarePaths(buildTargetUri, sketchUri);
 
 		const tomlContent = TOML.stringify({
 			wokwi: {
 				version: 1,
-				firmware: firmwarePaths.firmware,
-				elf: firmwarePaths.elf,
+				firmware: hexPath,
+				elf: elfPath,
 			}
 		});
 
-		const sketchTypes = {
-			uno: "UNO",
-			uno1Button: "UNO with 1 button",
-			uno1Led: "UNO with 1 LED",
-			uno1Button1Led: "UNO with 1 button and 1 LED",
-			uno2Buttons2Leds: "UNO with 2 buttons and 2 LEDs",
-		};
+		const diagramContent = await requestDiagramTemplateFromUser();
 
-		const sketchType = await vscode.window.showQuickPick([
-			{ label: sketchTypes.uno, description: sketchTypes.uno, },
-			{ label: sketchTypes.uno1Button, description: sketchTypes.uno1Button, },
-			{ label: sketchTypes.uno1Led, description: sketchTypes.uno1Led, },
-			{ label: sketchTypes.uno1Button1Led, description: sketchTypes.uno1Button1Led, },
-			{ label: sketchTypes.uno2Buttons2Leds, description: sketchTypes.uno2Buttons2Leds, },
-		], {
-			placeHolder: "Select a sketch type",
-			matchOnDescription: true,
-		});
-
-		if (!sketchType) {
+		if (!diagramContent) {
 			return;
 		}
 
-		const diagrams = {
-			[sketchTypes.uno]: templates.uno,
-			[sketchTypes.uno1Button]: templates.uno1Button,
-			[sketchTypes.uno1Led]: templates.uno1Led,
-			[sketchTypes.uno1Button1Led]: templates.uno1Button1Led,
-			[sketchTypes.uno2Buttons2Leds]: templates.uno2Buttons2Leds,
-		};
-
-		const diagram = diagrams[sketchType.label];
-
-		if (!diagram) {
-			vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: Unable to find diagram template');
-			return;
-		}
-
-		const { toml: tomlPath, diagram: diagramPath } = await getSketchSimFilePaths(sketchPath);
-		await writeWorkspaceFile(tomlPath, tomlContent);
-		await writeJsonWorkspaceFile(diagramPath, diagram);
+		const { tomlUri, diagramUri } = await getSketchSimFileUris(sketchUri);
+		await writeWorkspaceFile(tomlUri, tomlContent);
+		await writeJsonWorkspaceFile(diagramUri, diagramContent);
 
 		if (!usingActiveSketch && getConfig().get("autoSelectSketchOnCreateSim")) {
-			await vscode.window.showTextDocument(vscode.Uri.file(sketchPath));
-			await selectArduinoSketch(sketchPath, !!getConfig().get("autoCompileSketchOnCreateSim"), false);
+			await vscode.window.showTextDocument(sketchUri);
+			await selectArduinoSketch(
+				sketchUri,
+				!!getConfig().get("autoCompileSketchOnCreateSim"),
+				false,
+				arduinoConfigUri,
+				arduinoConfig,
+			);
 		}
 
-		await configureWokwiTomlFirmwarePaths(sketchPath);
+		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 	});
 	context.subscriptions.push(disposable);
 }
