@@ -726,26 +726,23 @@ export function activate(context: vscode.ExtensionContext) {
 			} = setupResult;
 
 			if (getConfig().get("autoSelectSketchOnSave")) {
-				const {
-					updatedSketch,
-				} = await selectArduinoSketch(
+				await selectArduinoSketch(
 					sketchUri,
 					!!getConfig().get("autoVerifySketchOnSave"),
 					true,
 					arduinoConfigUri,
 					arduinoConfig,
 				);
+			}
 
-				if (updatedSketch && getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
-					await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
+			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
+			}
+
+			if (getConfig().get("autoRestartSimulationOnSave")) {
+				if (await sketchHasSimulation(sketchUri)) {
+					await vscode.commands.executeCommand('wokwi-vscode.start');
 				}
-
-				if (getConfig().get("autoRestartSimulationOnSave")) {
-					if (await sketchHasSimulation(sketchUri)) {
-						await vscode.commands.executeCommand('wokwi-vscode.start');
-					}
-				}
-
 			}
 		})
 	);
@@ -770,22 +767,20 @@ export function activate(context: vscode.ExtensionContext) {
 				buildTargetUri,
 			} = setupResult;
 
+
 			if (getConfig().get("autoSelectSketchOnOpen")) {
-				const {
-					updatedSketch,
-				} = await selectArduinoSketch(
+				await selectArduinoSketch(
 					sketchUri,
 					!!getConfig().get("autoCompileSketchOnOpen"),
 					false,
 					arduinoConfigUri,
 					arduinoConfig,
 				);
-
-				if (updatedSketch && getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
-					await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
-				}
 			}
 
+			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
+			}
 		}));
 
 	// The command has been defined in the package.json file
