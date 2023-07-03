@@ -84,7 +84,7 @@
         },
         "arduino-sketch-auto-switcher.autoCompileSketchOnOpen": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enable to automatically compile the sketch after opening it."
         },
         "arduino-sketch-auto-switcher.autoCompileSketchOnCreateSim": {
@@ -94,7 +94,7 @@
         },
         "arduino-sketch-auto-switcher.autoConfigureWokwiTomlFirmwarePathOnSketchOpen": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enable to automatically update the firmware path in the adjacent wokwi.toml file when a sketch is selected."
         },
         "arduino-sketch-auto-switcher.autoConfigureWokwiTomlFirmwarePathOnSketchSave": {
