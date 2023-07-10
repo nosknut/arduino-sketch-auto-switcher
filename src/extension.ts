@@ -123,6 +123,16 @@ async function getArduinoConfigUri(workspaceUri: vscode.Uri) {
 	);
 }
 
+async function setArduinoConfig(arduinoConfigUri: vscode.Uri, arduinoConfig: ArduinoConfig) {
+	// TODO: For some reason this is not working.
+	// The Arduino extension still analyzes the
+	// sketch despite the setting being set to false
+	// Force the Arduino Extension to not analyze the sketch on change
+	await runWithoutSetting('arduino', 'analyzeOnSettingChange', async () => {
+		await writeJsonWorkspaceFile(arduinoConfigUri, arduinoConfig);
+	});
+}
+
 async function showArduinoSetup() {
 	if (getConfig().get("autoShowConfigurationOnMissingArduinoJson")) {
 
@@ -159,8 +169,8 @@ async function showArduinoSetup() {
 }
 
 type ArduinoConfig = {
-	output: string,
-	sketch: string,
+	output?: string,
+	sketch?: string,
 };
 
 async function getWorkspaceJsonFile<T>(uri: vscode.Uri) {
@@ -182,10 +192,10 @@ async function setDefaultArduinoOutput(arduinoConfig: ArduinoConfig) {
 	return false;
 }
 
-function getArduinoBuildTargetUri(workspaceUri: vscode.Uri, arduinoConfig: ArduinoConfig) {
+function getArduinoBuildTargetUri(workspaceUri: vscode.Uri, buildTarget: string) {
 	return vscode.Uri.joinPath(
 		workspaceUri,
-		arduinoConfig.output,
+		buildTarget,
 	);
 }
 
@@ -243,13 +253,7 @@ async function selectArduinoSketch(
 	const somethingChanged = status.updatedOutput || status.updatedSketch;
 
 	if (somethingChanged) {
-		// TODO: For some reason this is not working.
-		// The Arduino extension still analyzes the
-		// sketch despite the setting being set to false
-		// Force the Arduino Extension to not analyze the sketch on change
-		await runWithoutSetting('arduino', 'analyzeOnSettingChange', async () => {
-			await writeJsonWorkspaceFile(arduinoConfigUri, arduinoConfig);
-		});
+		await setArduinoConfig(arduinoConfigUri, arduinoConfig);
 	}
 
 	if (verify) {
@@ -805,7 +809,15 @@ async function standardSetup(sketchUri: vscode.Uri) {
 
 	const arduinoConfig = await getWorkspaceJsonFile<ArduinoConfig>(arduinoConfigUri);
 
-	const buildTargetUri = getArduinoBuildTargetUri(workspaceUri, arduinoConfig);
+	if (await setDefaultArduinoOutput(arduinoConfig)) {
+		await setArduinoConfig(arduinoConfigUri, arduinoConfig);
+	}
+
+	if (!arduinoConfig.output) {
+		return;
+	}
+
+	const buildTargetUri = getArduinoBuildTargetUri(workspaceUri, arduinoConfig.output);
 
 	return {
 		arduinoConfigUri,
