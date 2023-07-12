@@ -361,25 +361,24 @@ async function configureWokwiTomlFirmwarePaths(
 
 			if (selectSimulationCOnfig === "Yes") {
 				await vscode.commands.executeCommand('wokwi-vscode.selectConfigFile');
-			}
 
-			const diagram = (await vscode.workspace.openTextDocument(diagramUri)).getText();
+				const diagram = (await vscode.workspace.openTextDocument(diagramUri)).getText();
 
-			const simBoardType = getSimBoardType(diagram);
-			const sketchBoardType = getSketchBoardType(arduinoConfig.board);
+				const simBoardType = getSimBoardType(diagram);
+				const sketchBoardType = getSketchBoardType(arduinoConfig.board);
 
-			if (simBoardType !== sketchBoardType) {
-				const switchBoard = await vscode.window.showWarningMessage(
-					`This simulation uses an ${simBoardType} board. Would you like to select it?`,
-					"Yes",
-					"No"
-				);
+				if (simBoardType !== sketchBoardType) {
+					const switchBoard = await vscode.window.showWarningMessage(
+						`This simulation uses an ${simBoardType} board. Would you like to select it?`,
+						"Yes",
+						"No"
+					);
 
-				if (switchBoard === "Yes") {
-					await vscode.commands.executeCommand('arduino.changeBoardType');
+					if (switchBoard === "Yes") {
+						await vscode.commands.executeCommand('arduino.changeBoardType');
+					}
 				}
 			}
-
 		}, 3000);
 	}
 }
