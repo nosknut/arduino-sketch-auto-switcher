@@ -865,7 +865,7 @@ export function activate(context: vscode.ExtensionContext) {
 				buildTargetUri,
 			} = setupResult;
 
-			let switchedToNewSketch = !sketchIsSelected(sketchUri, arduinoConfig);
+			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
 
 			if (getConfig().get("autoSelectSketchOnSave")) {
 				await selectArduinoSketch(
@@ -909,7 +909,7 @@ export function activate(context: vscode.ExtensionContext) {
 				buildTargetUri,
 			} = setupResult;
 
-			let switchedToNewSketch = !sketchIsSelected(sketchUri, arduinoConfig);
+			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
 
 			if (getConfig().get("autoSelectSketchOnOpen")) {
 				await selectArduinoSketch(
