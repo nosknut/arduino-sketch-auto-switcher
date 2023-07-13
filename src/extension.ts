@@ -1,8 +1,11 @@
 import * as TOML from '@iarna/toml';
-import { basename, dirname, sep as pathSeparator, relative } from 'path';
+import * as child_process from "child_process";
+import { basename, dirname, join, sep as pathSeparator, relative, resolve as resolvePath } from 'path';
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+
+const channel = vscode.window.createOutputChannel("Arduino Sketch Auto Switcher");
 
 type WokWiToml = {
 	wokwi: {
@@ -86,6 +89,12 @@ async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Ur
 			vscode.Uri.joinPath(buildTargetUri, `${sketchName}.elf`),
 		),
 	};
+}
+
+function getLibrariesTxtUri(sketchUri: vscode.Uri) {
+	const sketchDirUri = getWorkspaceFileDirectory(sketchUri);
+
+	return vscode.Uri.joinPath(sketchDirUri, `libraries.txt`);
 }
 
 async function updateToml(tomlFileUri: vscode.Uri, hexFilePath: string, elfFilePath: string) {
@@ -221,12 +230,158 @@ async function runWithoutSetting(configuration: string, setting: string, callbac
 	}
 }
 
+export function trim(value: any) {
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i++) {
+			value[i] = trim(value[i]);
+		}
+	} else if (typeof value === "string") {
+		value = value.trim();
+	}
+	return value;
+}
+
+
+/**
+ * If given an string, splits the string on commas. If given an array, returns
+ * the array. All strings in the output are trimmed.
+ * @param value String or string array to convert.
+ * @returns Array of strings split from the input.
+ */
+export function toStringArray(value: string | string[]): string[] {
+	if (value) {
+		let result: string[];
+
+		if (typeof value === "string") {
+			result = value.split(",");
+		} else {
+			result = <string[]>value;
+		}
+
+		return trim(result);
+	}
+
+	return [];
+}
+
+function getAdditionalUrls(): string[] {
+	const value = vscode.workspace
+		.getConfiguration()
+		.get<string | string[]>("arduino.additionalUrls");
+
+	if (!value) {
+		return [];
+	}
+
+	return toStringArray(value);
+}
+
+/**
+ * Send a command to arduino
+ * @param {string} command - base command path (either Arduino IDE or CLI)
+ * @param {vscode.OutputChannel} outputChannel - output display channel
+ * @param {string[]} [args=[]] - arguments to pass to the command
+ * @param {any} [options={}] - options and flags for the arguments
+ * @param {(string) => {}} - callback for stdout text
+ */
+export function spawn(
+	command: string,
+	args: string[] = [],
+	options: child_process.SpawnOptions = {},
+	output?: {
+		channel?: vscode.OutputChannel,
+		stdout?: (s: string) => void,
+		stderr?: (s: string) => void
+	},
+): Thenable<object> {
+	return new Promise((resolve, reject) => {
+		options.cwd = options.cwd || resolvePath(join(__dirname, ".."));
+		const child = child_process.spawn(command, args, options);
+
+		if (output) {
+			if (output.channel || output.stdout) {
+				child.stdout?.on("data", (data: Buffer) => {
+					const decoded = data.toString();
+					if (output.stdout) {
+						output.stdout(decoded);
+					}
+					if (output.channel) {
+						output.channel.append(decoded);
+					}
+				});
+			}
+			if (output.channel || output.stderr) {
+				child.stderr?.on("data", (data: Buffer) => {
+					const decoded = data.toString();
+					if (decoded.toLowerCase().includes("error")) {
+						vscode.window.showErrorMessage(decoded);
+					}
+					if (output.stderr) {
+						output.stderr(decoded);
+					}
+					if (output.channel) {
+						output.channel.append(decoded);
+					}
+				});
+			}
+		}
+
+		child.on("error", (error) => reject({ error }));
+
+		// It's important to use use the "close" event instead of "exit" here.
+		// There could still be buffered data in stdout or stderr when the
+		// process exits that we haven't received yet.
+		child.on("close", (code) => {
+			if (code === 0) {
+				resolve({ code });
+			} else {
+				reject({ code });
+			}
+		});
+	});
+}
+
+async function installLibrary(libName: string, version: string = "") {
+	const args = ["lib", "install", `${libName}${version && "@" + version}`];
+
+	const additionalUrls = getAdditionalUrls();
+	try {
+
+		await spawn(
+			"arduino-cli",
+			args.concat(["--additional-urls", additionalUrls.join(",")]),
+			undefined,
+			{ channel });
+	} catch (e) {
+		// Do nothing. Error should get printed in the output channel.
+	}
+}
+
+function parseLibrariesTxt(content: string) {
+	return content
+		.split('\n')
+		.map(line => line.trim())
+		.filter(line => line.length && (line[0] !== '#'));
+}
+
+async function installLibrariesTxt(librariesTxtUri: vscode.Uri) {
+	if (await workspaceFileExists(librariesTxtUri)) {
+		const libraries = parseLibrariesTxt((await vscode.workspace.openTextDocument(librariesTxtUri)).getText());
+
+		for (const lib of libraries) {
+			const [libName, version] = lib.split('@');
+			await installLibrary(libName, version);
+		}
+	}
+}
+
 async function selectArduinoSketch(
 	uri: vscode.Uri,
 	verify: boolean,
 	verifyWithoutChanges: boolean,
 	arduinoConfigUri: vscode.Uri,
 	arduinoConfig: ArduinoConfig,
+	workspaceUri: vscode.Uri,
 ) {
 	const status = {
 		verified: false,
@@ -266,6 +421,12 @@ async function selectArduinoSketch(
 			}
 		}
 	}
+
+	const sketchLibrariesUri = getLibrariesTxtUri(uri);
+	const projectLibrariesUri = getLibrariesTxtUri(workspaceUri);
+
+	await installLibrariesTxt(sketchLibrariesUri);
+	await installLibrariesTxt(projectLibrariesUri);
 
 	const somethingChanged = status.updatedOutput || status.updatedSketch || status.updatedBoardType;
 
@@ -855,6 +1016,7 @@ async function standardSetup(sketchUri: vscode.Uri) {
 		arduinoConfigUri,
 		arduinoConfig,
 		buildTargetUri,
+		workspaceUri,
 	};
 }
 
@@ -895,6 +1057,7 @@ export function activate(context: vscode.ExtensionContext) {
 				arduinoConfigUri,
 				arduinoConfig,
 				buildTargetUri,
+				workspaceUri,
 			} = setupResult;
 
 			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
@@ -906,6 +1069,7 @@ export function activate(context: vscode.ExtensionContext) {
 					true,
 					arduinoConfigUri,
 					arduinoConfig,
+					workspaceUri,
 				);
 			}
 
@@ -939,6 +1103,7 @@ export function activate(context: vscode.ExtensionContext) {
 				arduinoConfigUri,
 				arduinoConfig,
 				buildTargetUri,
+				workspaceUri,
 			} = setupResult;
 
 			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
@@ -950,6 +1115,7 @@ export function activate(context: vscode.ExtensionContext) {
 					false,
 					arduinoConfigUri,
 					arduinoConfig,
+					workspaceUri,
 				);
 			}
 
@@ -1001,6 +1167,7 @@ export function activate(context: vscode.ExtensionContext) {
 			arduinoConfigUri,
 			arduinoConfig,
 			buildTargetUri,
+			workspaceUri,
 		} = setupResult;
 
 		const { hexPath, elfPath } = await getFirmwarePaths(buildTargetUri, sketchUri);
@@ -1033,6 +1200,7 @@ export function activate(context: vscode.ExtensionContext) {
 				false,
 				arduinoConfigUri,
 				arduinoConfig,
+				workspaceUri,
 			);
 		}
 
