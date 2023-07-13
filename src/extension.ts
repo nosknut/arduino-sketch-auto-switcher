@@ -232,6 +232,7 @@ async function selectArduinoSketch(
 		verified: false,
 		updatedSketch: false,
 		updatedOutput: false,
+		updatedBoardType: false,
 	};
 
 	if (!fileIsSketch(uri)) {
@@ -251,7 +252,22 @@ async function selectArduinoSketch(
 		status.updatedOutput = true;
 	}
 
-	const somethingChanged = status.updatedOutput || status.updatedSketch;
+	if (await sketchHasSimulation(uri)) {
+		const { diagramUri } = await getSketchSimFileUris(uri);
+
+		const diagram = (await vscode.workspace.openTextDocument(diagramUri)).getText();
+
+		const simBoardType = getSimBoardType(diagram);
+
+		if (simBoardType !== arduinoConfig.board) {
+			if (simBoardType) {
+				arduinoConfig.board = simBoardType;
+				status.updatedBoardType = true;
+			}
+		}
+	}
+
+	const somethingChanged = status.updatedOutput || status.updatedSketch || status.updatedBoardType;
 
 	if (somethingChanged) {
 		await setArduinoConfig(arduinoConfigUri, arduinoConfig);
@@ -294,30 +310,15 @@ async function sketchHasSimulation(sketchUri: vscode.Uri) {
 
 function getSimBoardType(diagram: string) {
 	if (diagram.includes("wokwi-arduino-uno")) {
-		return "Arduino UNO";
+		return "arduino:avr:uno";
 	}
 
 	if (diagram.includes("wokwi-arduino-mega")) {
-		return "Arduino MEGA";
+		return "arduino:avr:megaADK";
 	}
 
 	if (diagram.includes("wokwi-esp32")) {
-		return "ESP32";
-	}
-	return null;
-}
-
-function getSketchBoardType(sketchBoard?: string) {
-	if (sketchBoard?.includes("uno")) {
-		return "Arduino UNO";
-	}
-
-	if (sketchBoard?.includes("mega")) {
-		return "Arduino MEGA";
-	}
-
-	if (sketchBoard?.includes("esp32")) {
-		return "ESP32";
+		return "esp32:esp32:esp32";
 	}
 	return null;
 }
@@ -326,7 +327,6 @@ async function configureWokwiTomlFirmwarePaths(
 	buildTargetUri: vscode.Uri,
 	sketchUri: vscode.Uri,
 	showSimSwitchMessage: boolean,
-	arduinoConfig: ArduinoConfig,
 ) {
 	const exists = await sketchHasSimulation(sketchUri);
 	if (!exists) {
@@ -361,23 +361,6 @@ async function configureWokwiTomlFirmwarePaths(
 
 			if (selectSimulationCOnfig === "Yes") {
 				await vscode.commands.executeCommand('wokwi-vscode.selectConfigFile');
-
-				const diagram = (await vscode.workspace.openTextDocument(diagramUri)).getText();
-
-				const simBoardType = getSimBoardType(diagram);
-				const sketchBoardType = getSketchBoardType(arduinoConfig.board);
-
-				if (simBoardType !== sketchBoardType) {
-					const switchBoard = await vscode.window.showWarningMessage(
-						`This simulation uses an ${simBoardType} board. Would you like to select it?`,
-						"Yes",
-						"No"
-					);
-
-					if (switchBoard === "Yes") {
-						await vscode.commands.executeCommand('arduino.changeBoardType');
-					}
-				}
 			}
 		}, 3000);
 	}
@@ -927,7 +910,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch, arduinoConfig);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
 			}
 
 			if (getConfig().get("autoRestartSimulationOnSave")) {
@@ -971,7 +954,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch, arduinoConfig);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
 			}
 		}));
 
@@ -1053,7 +1036,7 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch, arduinoConfig);
+		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
 	});
 	context.subscriptions.push(disposable);
 }
