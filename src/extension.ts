@@ -195,7 +195,7 @@ async function getWorkspaceJsonFile<T>(uri: vscode.Uri) {
 async function setDefaultArduinoOutput(arduinoConfig: ArduinoConfig) {
 	if (!arduinoConfig.output) {
 		arduinoConfig.output = getConfig().get("defaultArduinoOutput") || "";
-		vscode.window.showInformationMessage('Arduino Sketch Auto Switcher: Updated build output path in arduino.json');
+		vscode.window.showInformationMessage('Updated build output path in arduino.json');
 		return true;
 	}
 
@@ -391,7 +391,7 @@ async function selectArduinoSketch(
 	};
 
 	if (!fileIsSketch(uri)) {
-		vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: Selected file is not an Arduino sketch');
+		vscode.window.showErrorMessage('Selected file is not an Arduino sketch');
 		return status;
 	}
 
@@ -400,7 +400,7 @@ async function selectArduinoSketch(
 	if (!sketchAlreadySelected) {
 		status.updatedSketch = true;
 		arduinoConfig.sketch = getHumanReadableWorkspacePath(uri);
-		// vscode.window.showInformationMessage(`Arduino Sketch Auto Switcher: Selected ${getWorkspaceFileName(uri)}`);
+		// vscode.window.showInformationMessage(`Selected ${getWorkspaceFileName(uri)}`);
 	}
 
 	if (await setDefaultArduinoOutput(arduinoConfig)) {
@@ -966,7 +966,7 @@ async function requestDiagramTemplateFromUser() {
 		.find(template => template.label === sketchType.label)?.template;
 
 	if (!diagram) {
-		vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: Unable to find diagram template');
+		vscode.window.showErrorMessage('Unable to find diagram template');
 		return;
 	}
 
@@ -1135,12 +1135,12 @@ export function activate(context: vscode.ExtensionContext) {
 		const sketchUri = uriArg || activeSketch;
 
 		if (usingActiveSketch && !activeSketch) {
-			vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: No sketch is open');
+			vscode.window.showErrorMessage('No sketch is open');
 			return;
 		}
 
 		if (usingActiveSketch && !fileIsSketch(sketchUri)) {
-			vscode.window.showErrorMessage('Arduino Sketch Auto Switcher: You must open a .ino file to create a simulation');
+			vscode.window.showErrorMessage('You must open a .ino file to create a simulation');
 			return;
 		}
 
