@@ -4,10 +4,10 @@
   "description": "Automatically selects the arduino sketch that is currently focused in the editor.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nosknut/arduino-sketch-auto-switcher"  
+    "url": "https://github.com/nosknut/arduino-sketch-auto-switcher"
   },
   "publisher": "nosknut",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.79.0"
   },
