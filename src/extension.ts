@@ -1,9 +1,11 @@
 import * as TOML from '@iarna/toml';
 import * as child_process from "child_process";
+import { Socket } from 'net';
 import { basename, dirname, join, sep as pathSeparator, relative, resolve as resolvePath } from 'path';
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+import { WebSocketServer } from 'ws';
 
 const channel = vscode.window.createOutputChannel("Arduino Sketch Auto Switcher");
 
@@ -12,6 +14,8 @@ type WokWiToml = {
 		version: number;
 		firmware: string;
 		elf: string;
+		rfc2217ServerPort?: number;
+		webSocketServerPort?: number;
 	};
 };
 
@@ -98,21 +102,16 @@ function getLibrariesTxtUri(sketchUri: vscode.Uri) {
 }
 
 async function updateToml(tomlFileUri: vscode.Uri, hexFilePath: string, elfFilePath: string) {
-	const tomlFile = await vscode.workspace.openTextDocument(tomlFileUri);
-	try {
-		const toml = TOML.parse(tomlFile.getText()) as WokWiToml;
-		if (toml.wokwi) {
-			const original = TOML.stringify(toml);
-			toml.wokwi.firmware = hexFilePath;
-			toml.wokwi.elf = elfFilePath;
-			const updated = TOML.stringify(toml);
+	const toml = await getTomlWorkspaceFile(tomlFileUri);
+	if (toml?.wokwi) {
+		const original = TOML.stringify(toml);
+		toml.wokwi.firmware = hexFilePath;
+		toml.wokwi.elf = elfFilePath;
+		const updated = TOML.stringify(toml);
 
-			if (updated !== original) {
-				await writeWorkspaceFile(tomlFileUri, TOML.stringify(toml));
-			}
+		if (updated !== original) {
+			await writeWorkspaceFile(tomlFileUri, TOML.stringify(toml));
 		}
-	} catch (e) {
-		console.error(e);
 	}
 }
 
@@ -130,6 +129,16 @@ async function getArduinoConfigUri(workspaceUri: vscode.Uri) {
 	return await findWorkspaceFile(
 		new vscode.RelativePattern(workspaceUri, "**/arduino.json")
 	);
+}
+
+async function getTomlWorkspaceFile(tomlUri: vscode.Uri) {
+	const tomlFile = await vscode.workspace.openTextDocument(tomlUri);
+
+	try {
+		return TOML.parse(tomlFile.getText()) as WokWiToml;
+	} catch (e) {
+		console.error(e);
+	}
 }
 
 async function setArduinoConfig(arduinoConfigUri: vscode.Uri, arduinoConfig: ArduinoConfig) {
@@ -1020,6 +1029,38 @@ async function standardSetup(sketchUri: vscode.Uri) {
 	};
 }
 
+function startSerialProxy({ tcpPort, webSocketPort }: { tcpPort: number, webSocketPort: number }) {
+	const serialSocket = new Socket({ writable: true, readable: true });
+	const webSocketServer = new WebSocketServer({ port: webSocketPort });
+
+	serialSocket.connect(tcpPort, 'localhost', () => {
+		channel.append(`Connected to Serial Port: ${tcpPort}\n`);
+		vscode.window.showInformationMessage('Wokwi: Serial Port is available on WebSocket: ws://localhost:' + webSocketPort);
+		webSocketServer.on('connection', function connection(webSocket) {
+			channel.append(`Client connected to websocket\n`);
+			vscode.window.showInformationMessage('Wokwi: Client connected to WebSocket Serial Port');
+			serialSocket.on('data', (data) => {
+				webSocket.send(data.toString());
+			});
+
+
+			webSocket.on('message', (data) => {
+				serialSocket.write(data.toString());
+			});
+
+			webSocketServer.on('close', () => {
+				channel.append(`Client disconnected from websocket\n`);
+				vscode.window.showWarningMessage('Wokwi: Client disconnected from WebSocket Serial Port');
+			});
+		});
+
+		serialSocket.on('close', () => {
+			channel.append(`Serial Port ${tcpPort} disconnected\n`);
+			vscode.window.showWarningMessage('Wokwi: Serial Port disconnected');
+		});
+	});
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -1035,7 +1076,27 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('arduino-sketch-auto-switcher.startWokwiSimulation', async (args: any) => {
+			const activeSketch = args || vscode.window.activeTextEditor?.document.uri;
 			await vscode.commands.executeCommand('wokwi-vscode.start');
+
+			if (!activeSketch) {
+				return;
+			}
+			if (!await sketchHasSimulation(activeSketch)) {
+				return;
+			}
+
+			const { tomlUri } = await getSketchSimFileUris(activeSketch);
+
+			const toml = await getTomlWorkspaceFile(tomlUri);
+			const tcpPort = toml?.wokwi?.rfc2217ServerPort;
+			const webSocketPort = toml?.wokwi?.webSocketServerPort;
+			if (tcpPort && webSocketPort) {
+				startSerialProxy({
+					tcpPort,
+					webSocketPort,
+				});
+			}
 		})
 	);
 
@@ -1079,7 +1140,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (getConfig().get("autoRestartSimulationOnSave")) {
 				if (await sketchHasSimulation(sketchUri)) {
-					await vscode.commands.executeCommand('wokwi-vscode.start');
+					await vscode.commands.executeCommand('arduino-sketch-auto-switcher.startWokwiSimulation', sketchUri);
 				}
 			}
 		})
