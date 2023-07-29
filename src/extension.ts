@@ -5,9 +5,11 @@ import { basename, dirname, join, sep as pathSeparator, relative, resolve as res
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 const channel = vscode.window.createOutputChannel("Arduino Sketch Auto Switcher");
+let serialSocket: Socket | null = null;
+let webSocketServer: WebSocketServer | null = null;
 
 type WokWiToml = {
 	wokwi: {
@@ -1029,36 +1031,141 @@ async function standardSetup(sketchUri: vscode.Uri) {
 	};
 }
 
-function startSerialProxy({ tcpPort, webSocketPort }: { tcpPort: number, webSocketPort: number }) {
-	const serialSocket = new Socket({ writable: true, readable: true });
-	const webSocketServer = new WebSocketServer({ port: webSocketPort });
+function startWebSocketServer(port: number, onError: () => void) {
+	const server = new WebSocketServer({ port });
 
-	serialSocket.connect(tcpPort, 'localhost', () => {
-		channel.append(`Connected to Serial Port: ${tcpPort}\n`);
-		vscode.window.showInformationMessage('Wokwi: Serial Port is available on WebSocket: ws://localhost:' + webSocketPort);
-		webSocketServer.on('connection', function connection(webSocket) {
-			channel.append(`Client connected to websocket\n`);
-			vscode.window.showInformationMessage('Wokwi: Client connected to WebSocket Serial Port');
-			serialSocket.on('data', (data) => {
-				webSocket.send(data.toString());
-			});
+	server.on('listening', () => {
+		channel.append('Serial Port is available on WebSocket: ws://localhost:' + port);
+		vscode.window.showInformationMessage('Wokwi: Serial Port is available on WebSocket: ws://localhost:' + port);
+	});
 
+	server.on('connection', (socket) => {
+		channel.append(`Client connected to websocket\n`);
+		vscode.window.showInformationMessage('Wokwi: Client connected to WebSocket Serial Port');
 
-			webSocket.on('message', (data) => {
-				serialSocket.write(data.toString());
-			});
-
-			webSocketServer.on('close', () => {
-				channel.append(`Client disconnected from websocket\n`);
-				vscode.window.showWarningMessage('Wokwi: Client disconnected from WebSocket Serial Port');
-			});
+		socket.on('message', (data) => {
+			serialSocket?.write(data.toString());
 		});
 
-		serialSocket.on('close', () => {
-			channel.append(`Serial Port ${tcpPort} disconnected\n`);
-			vscode.window.showWarningMessage('Wokwi: Serial Port disconnected');
+		socket.on('close', () => {
+			channel.append(`Client disconnected from websocket\n`);
+			vscode.window.showWarningMessage('Wokwi: Client disconnected from WebSocket Serial Port');
 		});
 	});
+
+	server.on('close', () => {
+		channel.append(`Websocket server closed\n`);
+		vscode.window.showWarningMessage('Wokwi: WebSocket Serial Port closed');
+	});
+
+	server.on('error', (error) => {
+		channel.append(`Websocket server error: ${error}\n`);
+		vscode.window.showErrorMessage(`Wokwi: WebSocket Serial Port error: ${error}`);
+		server.close();
+		onError();
+	});
+
+	return server;
+}
+
+function connectSerialClient(port: number) {
+	if (!serialSocket?.connecting) {
+		serialSocket?.connect(port, 'localhost', () => {
+			channel.append(`Connected to Serial Port: ${port}\n`);
+		});
+	}
+}
+
+function startSerialClient(port: number, onError: () => void) {
+	const socket = new Socket({ writable: true, readable: true });
+
+	connectSerialClient(port);
+
+	socket.on('data', (data) => {
+		const value = data.toString();
+		webSocketServer?.clients.forEach((client) => {
+			client.send(value);
+		});
+	});
+
+	socket.on('close', () => {
+		channel.append(`Serial Port ${port} disconnected\n`);
+	});
+
+	socket.on('error', (error) => {
+		channel.append(`Serial Port ${port} error: ${error}\n`);
+		vscode.window.showErrorMessage(`Wokwi: Serial Port error: ${error}`);
+		socket.destroy();
+		onError();
+	});
+
+	return socket;
+}
+
+function startSerialProxy({ tcpPort, webSocketPort }: { tcpPort: number, webSocketPort: number }) {
+	if (!webSocketServer) {
+		webSocketServer = startWebSocketServer(webSocketPort, () => webSocketServer = null);
+	}
+
+	if (!serialSocket) {
+		serialSocket = startSerialClient(tcpPort, () => serialSocket = null);
+	}
+
+	connectSerialClient(tcpPort);
+}
+
+async function getSerialProxyConfig(sketchUri?: vscode.Uri) {
+	if (!sketchUri) {
+		return;
+	}
+
+	if (!await sketchHasSimulation(sketchUri)) {
+		return;
+	}
+
+	const { tomlUri } = await getSketchSimFileUris(sketchUri);
+
+	const toml = await getTomlWorkspaceFile(tomlUri);
+	const tcpPort = toml?.wokwi?.rfc2217ServerPort;
+	const webSocketPort = toml?.wokwi?.webSocketServerPort;
+
+	if (!tcpPort || !webSocketPort) {
+		return;
+	}
+
+	return { tcpPort, webSocketPort };
+}
+
+// https://stackoverflow.com/questions/70989176/is-there-a-vs-code-api-function-to-return-all-open-text-editors-and-their-viewco
+async function getWokwiSimulatorTab() {
+	for (const tabGroup of vscode.window.tabGroups.all) {
+		for (const tab of tabGroup.tabs) {
+			if (tab.label === 'Wokwi Simulator') {
+				return tab;
+			}
+		}
+	}
+}
+
+function sleep(durationMs: number) {
+	return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
+async function retry(fn: () => Promise<boolean>, intervalMs: number, timeoutMs: number) {
+	let retries = 0;
+
+	while (true) {
+		if (await fn()) {
+			return true;
+		}
+
+		if (retries * intervalMs > timeoutMs) {
+			return false;
+		}
+
+		retries++;
+		await sleep(intervalMs);
+	}
 }
 
 // This method is called when your extension is activated
@@ -1077,25 +1184,23 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('arduino-sketch-auto-switcher.startWokwiSimulation', async (args: any) => {
 			const activeSketch = args || vscode.window.activeTextEditor?.document.uri;
+
+			const portConfig = await getSerialProxyConfig(activeSketch);
+
+			if (portConfig) {
+				const simulatorTab = await getWokwiSimulatorTab();
+
+				if (simulatorTab) {
+					await vscode.window.tabGroups.close(simulatorTab);
+				}
+			}
+
 			await vscode.commands.executeCommand('wokwi-vscode.start');
 
-			if (!activeSketch) {
-				return;
-			}
-			if (!await sketchHasSimulation(activeSketch)) {
-				return;
-			}
-
-			const { tomlUri } = await getSketchSimFileUris(activeSketch);
-
-			const toml = await getTomlWorkspaceFile(tomlUri);
-			const tcpPort = toml?.wokwi?.rfc2217ServerPort;
-			const webSocketPort = toml?.wokwi?.webSocketServerPort;
-			if (tcpPort && webSocketPort) {
-				startSerialProxy({
-					tcpPort,
-					webSocketPort,
-				});
+			if (portConfig) {
+				// Wait for the simulation to start
+				await retry(async () => !!await getWokwiSimulatorTab(), 10, 10000);
+				startSerialProxy(portConfig);
 			}
 		})
 	);
@@ -1268,6 +1373,20 @@ export function activate(context: vscode.ExtensionContext) {
 		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
 	});
 	context.subscriptions.push(disposable);
+
+	context.subscriptions.push({
+		dispose() {
+			webSocketServer?.close();
+			webSocketServer = null;
+		}
+	});
+
+	context.subscriptions.push({
+		dispose() {
+			serialSocket?.destroy();
+			serialSocket = null;
+		}
+	});
 }
 
 // This method is called when your extension is deactivated
