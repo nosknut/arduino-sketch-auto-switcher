@@ -1197,11 +1197,20 @@ export function activate(context: vscode.ExtensionContext) {
 
 			await vscode.commands.executeCommand('wokwi-vscode.start');
 
+			// Wait for the simulation to start
+			await retry(async () => !!await getWokwiSimulatorTab(), 10, 10000);
+
 			if (portConfig) {
-				// Wait for the simulation to start
-				await retry(async () => !!await getWokwiSimulatorTab(), 10, 10000);
 				startSerialProxy(portConfig);
 			}
+
+			// Move the Wokwi simulator tab to the right
+			await vscode.commands.executeCommand('moveActiveEditor', { to: 'right', by: 'group', value: 2 });
+
+			// Bring focus back to the sketch
+			// https://stackoverflow.com/questions/72720659/vscode-how-to-focus-to-an-editor
+			await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
+			await vscode.window.showTextDocument(activeSketch);
 		})
 	);
 
