@@ -69,6 +69,11 @@ function getWorkspaceFileName(uri: vscode.Uri) {
 	return basename(uri.toString());
 }
 
+async function readWorkspaceFile(uri: vscode.Uri) {
+	const document = await vscode.workspace.openTextDocument(uri);
+	return document.getText();
+}
+
 function getRelativePath(from: vscode.Uri, to: vscode.Uri) {
 
 	const rel1 = vscode.workspace.asRelativePath(from);
@@ -134,10 +139,10 @@ async function getArduinoConfigUri(workspaceUri: vscode.Uri) {
 }
 
 async function getTomlWorkspaceFile(tomlUri: vscode.Uri) {
-	const tomlFile = await vscode.workspace.openTextDocument(tomlUri);
+	const tomlFile = await readWorkspaceFile(tomlUri);
 
 	try {
-		return TOML.parse(tomlFile.getText()) as WokWiToml;
+		return TOML.parse(tomlFile) as WokWiToml;
 	} catch (e) {
 		console.error(e);
 	}
@@ -195,8 +200,8 @@ type ArduinoConfig = {
 };
 
 async function getWorkspaceJsonFile<T>(uri: vscode.Uri) {
-	const doc = await vscode.workspace.openTextDocument(uri);
-	return JSON.parse(doc.getText()) as T;
+	const doc = await readWorkspaceFile(uri);
+	return JSON.parse(doc) as T;
 }
 
 /**
@@ -377,7 +382,7 @@ function parseLibrariesTxt(content: string) {
 
 async function installLibrariesTxt(librariesTxtUri: vscode.Uri) {
 	if (await workspaceFileExists(librariesTxtUri)) {
-		const libraries = parseLibrariesTxt((await vscode.workspace.openTextDocument(librariesTxtUri)).getText());
+		const libraries = parseLibrariesTxt(await readWorkspaceFile(librariesTxtUri));
 
 		for (const lib of libraries) {
 			const [libName, version] = lib.split('@');
@@ -421,7 +426,7 @@ async function selectArduinoSketch(
 	if (await sketchHasSimulation(uri)) {
 		const { diagramUri } = await getSketchSimFileUris(uri);
 
-		const diagram = (await vscode.workspace.openTextDocument(diagramUri)).getText();
+		const diagram = await readWorkspaceFile(diagramUri);
 
 		const simBoardType = getSimBoardType(diagram);
 
