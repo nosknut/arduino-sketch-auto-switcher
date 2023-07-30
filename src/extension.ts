@@ -427,8 +427,16 @@ async function selectArduinoSketch(
 
 		if (simBoardType !== arduinoConfig.board) {
 			if (simBoardType) {
-				arduinoConfig.board = simBoardType;
-				status.updatedBoardType = true;
+				const changeBoardType = await vscode.window.showWarningMessage(
+					`This simulation uses an ${getSimBoardTypeName(simBoardType)}. Would you like to select this board type?`,
+					'Yes',
+					'No',
+				);
+
+				if (changeBoardType === 'Yes') {
+					arduinoConfig.board = simBoardType;
+					status.updatedBoardType = true;
+				}
 			}
 		}
 	}
@@ -493,6 +501,19 @@ function getSimBoardType(diagram: string) {
 		return "esp32:esp32:esp32";
 	}
 	return null;
+}
+
+function getSimBoardTypeName(boardType: string) {
+	switch (boardType) {
+		case "arduino:avr:uno":
+			return "Arduino Uno";
+		case "arduino:avr:megaADK":
+			return "Arduino Mega";
+		case "esp32:esp32:esp32":
+			return "ESP32";
+		default:
+			return boardType;
+	}
 }
 
 async function configureWokwiTomlFirmwarePaths(
