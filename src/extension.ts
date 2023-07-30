@@ -40,9 +40,9 @@ function getHumanReadableWorkspacePath(uri: vscode.Uri) {
 	// getForwardSlashPath(join('.', vscode.workspace.asRelativePath(uri)));
 }
 
-async function deleteFirmware(buildTargetUri: vscode.Uri) {
+async function deleteFirmware(buildTargetUri: vscode.Uri, isEsp: boolean) {
 	const firmware = await findWorkspaceFile(
-		new vscode.RelativePattern(buildTargetUri, "*.hex")
+		new vscode.RelativePattern(buildTargetUri, isEsp ? "*.bin" : "*.hex")
 	);
 	const elf = await findWorkspaceFile(
 		new vscode.RelativePattern(buildTargetUri, "*.elf")
@@ -86,14 +86,14 @@ function getRelativePath(from: vscode.Uri, to: vscode.Uri) {
 	return rel3;
 }
 
-async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri) {
+async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri, isEsp: boolean) {
 	const sketchName = getWorkspaceFileName(sketchUri);
 	const sketchDirUri = getWorkspaceFileDirectory(sketchUri);
 
 	return {
 		hexPath: getRelativePath(
 			sketchDirUri,
-			vscode.Uri.joinPath(buildTargetUri, `${sketchName}.hex`),
+			vscode.Uri.joinPath(buildTargetUri, sketchName + (isEsp ? ".bin" : ".hex")),
 		),
 		elfPath: getRelativePath(
 			sketchDirUri,
@@ -490,7 +490,7 @@ async function sketchHasSimulation(sketchUri: vscode.Uri) {
 	const { tomlUri, diagramUri } = await getSketchSimFileUris(sketchUri);
 	const tomlExists = await workspaceFileExists(tomlUri);
 	const diagramExists = await workspaceFileExists(diagramUri);
-	return tomlExists || diagramExists;
+	return tomlExists && diagramExists;
 }
 
 function getSimBoardType(diagram: string) {
@@ -533,7 +533,9 @@ async function configureWokwiTomlFirmwarePaths(
 
 	const { tomlUri, diagramUri } = await getSketchSimFileUris(sketchUri);
 
-	const firmwarePaths = await getFirmwarePaths(buildTargetUri, sketchUri);
+	const diagram = await readWorkspaceFile(diagramUri);
+
+	const firmwarePaths = await getFirmwarePaths(buildTargetUri, sketchUri, simIsEsp32(diagram));
 
 	if (!firmwarePaths) {
 		return;
@@ -1194,6 +1196,10 @@ async function retry(fn: () => Promise<boolean>, intervalMs: number, timeoutMs: 
 	}
 }
 
+function simIsEsp32(diagram: string) {
+	return getSimBoardType(diagram) === "esp32:esp32:esp32";
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -1371,7 +1377,12 @@ export function activate(context: vscode.ExtensionContext) {
 			workspaceUri,
 		} = setupResult;
 
-		const { hexPath, elfPath } = await getFirmwarePaths(buildTargetUri, sketchUri);
+		const diagramContent = await requestDiagramTemplateFromUser();
+
+		if (!diagramContent) {
+			return;
+		}
+		const { hexPath, elfPath } = await getFirmwarePaths(buildTargetUri, sketchUri, simIsEsp32(JSON.stringify(diagramContent)));
 
 		const tomlContent = TOML.stringify({
 			wokwi: {
@@ -1380,12 +1391,6 @@ export function activate(context: vscode.ExtensionContext) {
 				elf: elfPath,
 			}
 		});
-
-		const diagramContent = await requestDiagramTemplateFromUser();
-
-		if (!diagramContent) {
-			return;
-		}
 
 		const { tomlUri, diagramUri } = await getSketchSimFileUris(sketchUri);
 		await writeWorkspaceFile(tomlUri, tomlContent);
