@@ -1099,18 +1099,8 @@ function startWebSocketServer(port: number, onError: () => void) {
 	return server;
 }
 
-function connectSerialClient(port: number) {
-	if (!serialSocket?.connecting) {
-		serialSocket?.connect(port, 'localhost', () => {
-			channel.append(`Connected to Serial Port: ${port}\n`);
-		});
-	}
-}
-
-function startSerialClient(port: number, onError: () => void) {
+function startSerialClient(port: number, onConnect: (socket: Socket) => void, onError: () => void) {
 	const socket = new Socket({ writable: true, readable: true });
-
-	connectSerialClient(port);
 
 	socket.on('data', (data) => {
 		const value = data.toString();
@@ -1130,7 +1120,10 @@ function startSerialClient(port: number, onError: () => void) {
 		onError();
 	});
 
-	return socket;
+	socket.connect(port, 'localhost', () => {
+		channel.append(`Connected to Serial Port: ${port}\n`);
+		onConnect(socket);
+	});
 }
 
 function startSerialProxy({ tcpPort, webSocketPort }: { tcpPort: number, webSocketPort: number }) {
@@ -1139,10 +1132,12 @@ function startSerialProxy({ tcpPort, webSocketPort }: { tcpPort: number, webSock
 	}
 
 	if (!serialSocket) {
-		serialSocket = startSerialClient(tcpPort, () => serialSocket = null);
+		startSerialClient(
+			tcpPort,
+			socket => serialSocket = socket,
+			() => serialSocket = null,
+		);
 	}
-
-	connectSerialClient(tcpPort);
 }
 
 async function getSerialProxyConfig(sketchUri?: vscode.Uri) {
@@ -1269,13 +1264,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const portConfig = await getSerialProxyConfig(activeSketch);
 
-			const simulatorTab = await getWokwiSimulatorTab();
-
-			if (simulatorTab) {
-				await vscode.window.tabGroups.close(simulatorTab);
-			}
-
 			await createTempWokwiSimulationFiles(activeSketch);
+
+			const hadActiveSim = !!await getWokwiSimulatorTab();
 
 			await vscode.commands.executeCommand('wokwi-vscode.start');
 
@@ -1290,7 +1281,8 @@ export function activate(context: vscode.ExtensionContext) {
 				// Run this check in case the simulator fails to start
 				const newSimulatorTab = await getWokwiSimulatorTab();
 
-				if (newSimulatorTab?.isActive) {
+				// Open new simulations to the right, and leave existing ones where they are
+				if (!hadActiveSim && newSimulatorTab?.isActive) {
 					// Move the Wokwi simulator tab to the right
 					await vscode.commands.executeCommand('moveActiveEditor', { to: 'right', by: 'group', value: 2 });
 					// Bring focus back to the sketch
