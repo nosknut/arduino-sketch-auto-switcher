@@ -1066,7 +1066,7 @@ function startWebSocketServer(port: number, onError: () => void) {
 	const server = new WebSocketServer({ port });
 
 	server.on('listening', () => {
-		channel.append('Serial Port is available on WebSocket: ws://localhost:' + port);
+		channel.append('Serial Port is available on WebSocket: ws://localhost:' + port + '\n');
 		vscode.window.showInformationMessage('Wokwi: Serial Port is available on WebSocket: ws://localhost:' + port);
 	});
 
