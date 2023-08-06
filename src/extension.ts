@@ -86,19 +86,22 @@ function getRelativePath(from: vscode.Uri, to: vscode.Uri) {
 	return rel3;
 }
 
-async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri, isEsp: boolean) {
+function getAbsoluteFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri, isEsp: boolean) {
 	const sketchName = getWorkspaceFileName(sketchUri);
-	const sketchDirUri = getWorkspaceFileDirectory(sketchUri);
 
 	return {
-		hexPath: getRelativePath(
-			sketchDirUri,
-			vscode.Uri.joinPath(buildTargetUri, sketchName + (isEsp ? ".bin" : ".hex")),
-		),
-		elfPath: getRelativePath(
-			sketchDirUri,
-			vscode.Uri.joinPath(buildTargetUri, `${sketchName}.elf`),
-		),
+		hexPath: vscode.Uri.joinPath(buildTargetUri, sketchName + (isEsp ? ".bin" : ".hex")),
+		elfPath: vscode.Uri.joinPath(buildTargetUri, `${sketchName}.elf`),
+	};
+}
+
+async function getFirmwarePaths(buildTargetUri: vscode.Uri, sketchUri: vscode.Uri, isEsp: boolean) {
+	const sketchDirUri = getWorkspaceFileDirectory(sketchUri);
+	const { hexPath, elfPath } = getAbsoluteFirmwarePaths(buildTargetUri, sketchUri, isEsp);
+
+	return {
+		hexPath: getRelativePath(sketchDirUri, hexPath),
+		elfPath: getRelativePath(sketchDirUri, elfPath),
 	};
 }
 
@@ -1200,6 +1203,53 @@ function simIsEsp32(diagram: string) {
 	return getSimBoardType(diagram) === "esp32:esp32:esp32";
 }
 
+async function createTempWokwiSimulationFiles(sketchUri: vscode.Uri) {
+	if (!await sketchHasSimulation(sketchUri)) {
+		return;
+	}
+
+	const setupResult = await standardSetup(sketchUri);
+
+	if (!setupResult) {
+		return;
+	}
+
+	const {
+		buildTargetUri,
+		workspaceUri,
+	} = setupResult;
+
+	if (!workspaceUri) {
+		return;
+	}
+
+	const { diagramUri, tomlUri } = await getSketchSimFileUris(sketchUri);
+	const tempSimDirUri = vscode.Uri.joinPath(workspaceUri, '.wokwi', 'temp', 'config');
+
+	await vscode.workspace.fs.createDirectory(tempSimDirUri);
+
+	const tempDiagramUri = vscode.Uri.joinPath(tempSimDirUri, 'diagram.json');
+	const tempTomlUri = vscode.Uri.joinPath(tempSimDirUri, 'wokwi.toml');
+
+	await vscode.workspace.fs.copy(diagramUri, tempDiagramUri, { overwrite: true });
+	await vscode.workspace.fs.copy(tomlUri, tempTomlUri, { overwrite: true });
+
+	const diagram = await readWorkspaceFile(tempDiagramUri);
+
+	const firmwarePaths = await getAbsoluteFirmwarePaths(buildTargetUri, sketchUri, simIsEsp32(diagram));
+
+	if (!firmwarePaths) {
+		return;
+	}
+
+	const { hexPath, elfPath } = firmwarePaths;
+	await updateToml(
+		tempTomlUri,
+		getRelativePath(tempSimDirUri, hexPath),
+		getRelativePath(tempSimDirUri, elfPath),
+	);
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -1219,30 +1269,35 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const portConfig = await getSerialProxyConfig(activeSketch);
 
-			if (portConfig) {
-				const simulatorTab = await getWokwiSimulatorTab();
+			const simulatorTab = await getWokwiSimulatorTab();
 
-				if (simulatorTab) {
-					await vscode.window.tabGroups.close(simulatorTab);
-				}
+			if (simulatorTab) {
+				await vscode.window.tabGroups.close(simulatorTab);
 			}
+
+			await createTempWokwiSimulationFiles(activeSketch);
 
 			await vscode.commands.executeCommand('wokwi-vscode.start');
 
-			// Wait for the simulation to start
-			await retry(async () => !!await getWokwiSimulatorTab(), 10, 10000);
+			setTimeout(async () => {
+				// Wait for the simulation to start
+				await retry(async () => !!await getWokwiSimulatorTab(), 10, 10000);
 
-			if (portConfig) {
-				startSerialProxy(portConfig);
-			}
+				if (portConfig) {
+					startSerialProxy(portConfig);
+				}
 
-			// Move the Wokwi simulator tab to the right
-			await vscode.commands.executeCommand('moveActiveEditor', { to: 'right', by: 'group', value: 2 });
+				// Run this check in case the simulator fails to start
+				const newSimulatorTab = await getWokwiSimulatorTab();
 
-			// Bring focus back to the sketch
-			// https://stackoverflow.com/questions/72720659/vscode-how-to-focus-to-an-editor
-			await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
-			await vscode.window.showTextDocument(activeSketch);
+				if (newSimulatorTab?.isActive) {
+					// Move the Wokwi simulator tab to the right
+					await vscode.commands.executeCommand('moveActiveEditor', { to: 'right', by: 'group', value: 2 });
+					// Bring focus back to the sketch
+					// https://stackoverflow.com/questions/72720659/vscode-how-to-focus-to-an-editor
+					await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
+				}
+			}, 100);
 		})
 	);
 
@@ -1267,8 +1322,6 @@ export function activate(context: vscode.ExtensionContext) {
 				workspaceUri,
 			} = setupResult;
 
-			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
-
 			if (getConfig().get("autoSelectSketchOnSave")) {
 				await selectArduinoSketch(
 					sketchUri,
@@ -1281,7 +1334,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
 			}
 
 			if (getConfig().get("autoRestartSimulationOnSave")) {
@@ -1313,8 +1366,6 @@ export function activate(context: vscode.ExtensionContext) {
 				workspaceUri,
 			} = setupResult;
 
-			let switchedToNewSketch = !await sketchIsSelected(sketchUri, arduinoConfig);
-
 			if (getConfig().get("autoSelectSketchOnOpen")) {
 				await selectArduinoSketch(
 					sketchUri,
@@ -1327,7 +1378,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
 			}
 		}));
 
@@ -1396,8 +1447,6 @@ export function activate(context: vscode.ExtensionContext) {
 		await writeWorkspaceFile(tomlUri, tomlContent);
 		await writeJsonWorkspaceFile(diagramUri, diagramContent);
 
-		let switchedToNewSketch = !sketchIsSelected(sketchUri, arduinoConfig);
-
 		if (!usingActiveSketch && getConfig().get("autoSelectSketchOnCreateSim")) {
 			await vscode.window.showTextDocument(sketchUri);
 			await selectArduinoSketch(
@@ -1410,7 +1459,7 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, switchedToNewSketch);
+		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
 	});
 	context.subscriptions.push(disposable);
 
