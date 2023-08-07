@@ -7,7 +7,7 @@
     "url": "https://github.com/nosknut/arduino-sketch-auto-switcher"
   },
   "publisher": "nosknut",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "engines": {
     "vscode": "^1.79.0"
   },
