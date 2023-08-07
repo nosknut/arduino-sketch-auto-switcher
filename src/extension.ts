@@ -1371,6 +1371,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
 				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
+				await createTempWokwiSimulationFiles(sketchUri);
 			}
 		}));
 
