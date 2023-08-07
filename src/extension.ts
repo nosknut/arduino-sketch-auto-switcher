@@ -200,6 +200,7 @@ type ArduinoConfig = {
 	output?: string,
 	sketch?: string,
 	board?: string,
+	programmer?: string,
 };
 
 async function getWorkspaceJsonFile<T>(uri: vscode.Uri) {
@@ -483,6 +484,29 @@ async function getSketchSimFileUris(sketchUri: vscode.Uri) {
 		tomlUri,
 		diagramUri,
 	};
+}
+
+function getDefaultArduinoConfig(): ArduinoConfig {
+	return {
+		board: "arduino:avr:uno",
+		programmer: "avrisp",
+		output: getConfig().get("defaultArduinoOutput") || "",
+	};
+};
+
+function getDefaultArduinoConfigUri(workspaceUri: vscode.Uri) {
+	return vscode.Uri.joinPath(workspaceUri, ".vscode/arduino.json");
+}
+
+async function createDefaultArduinoConfig(workspaceUri: vscode.Uri) {
+	const arduinoConfigUri = getDefaultArduinoConfigUri(workspaceUri);
+
+	await setArduinoConfig(
+		arduinoConfigUri,
+		getDefaultArduinoConfig(),
+	);
+
+	return arduinoConfigUri;
 }
 
 async function workspaceFileExists(uri: vscode.Uri) {
@@ -1035,12 +1059,9 @@ async function standardSetup(sketchUri: vscode.Uri) {
 		return;
 	}
 
-	const arduinoConfigUri = await getArduinoConfigUri(workspaceUri);
-
-	if (!arduinoConfigUri) {
-		showArduinoSetup();
-		return;
-	}
+	const arduinoConfigUri =
+		await getArduinoConfigUri(workspaceUri)
+		|| await createDefaultArduinoConfig(workspaceUri);
 
 	const arduinoConfig = await getWorkspaceJsonFile<ArduinoConfig>(arduinoConfigUri);
 
