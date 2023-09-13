@@ -15,7 +15,7 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:**.ino"
+    "*"
   ],
   "main": "./dist/extension.js",
   "extensionDependencies": [
