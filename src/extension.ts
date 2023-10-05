@@ -551,7 +551,6 @@ function getSimBoardTypeName(boardType: string) {
 async function configureWokwiTomlFirmwarePaths(
 	buildTargetUri: vscode.Uri,
 	sketchUri: vscode.Uri,
-	showSimSwitchMessage: boolean,
 ) {
 	const exists = await sketchHasSimulation(sketchUri);
 	if (!exists) {
@@ -575,22 +574,7 @@ async function configureWokwiTomlFirmwarePaths(
 		elfPath,
 	);
 
-	if (showSimSwitchMessage) {
-		// Using a 3 second timeout to give the Arduino extension
-		// enough time to start building the sketch
-		// Without this the build will cause the UI to loose focus
-		setTimeout(async () => {
-			const selectSimulationCOnfig = await vscode.window.showWarningMessage(
-				"Would you like to select the simulation for the current sketch?",
-				"Yes",
-				"No",
-			);
-
-			if (selectSimulationCOnfig === "Yes") {
-				await vscode.commands.executeCommand('wokwi-vscode.selectConfigFile');
-			}
-		}, 3000);
-	}
+	await vscode.commands.executeCommand('wokwi-vscode.selectConfigFile', tomlUri);
 }
 
 function fileIsSketch(uri: vscode.Uri) {
@@ -1298,7 +1282,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchSave")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 			}
 
 			if (getConfig().get("autoRestartSimulationOnSave")) {
@@ -1423,7 +1407,7 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
+		await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 	});
 	context.subscriptions.push(disposable);
 
