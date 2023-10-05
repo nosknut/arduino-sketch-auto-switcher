@@ -1219,53 +1219,6 @@ function simIsEsp32(diagram: string) {
 	return getSimBoardType(diagram) === "esp32:esp32:esp32";
 }
 
-async function createTempWokwiSimulationFiles(sketchUri: vscode.Uri) {
-	if (!await sketchHasSimulation(sketchUri)) {
-		return;
-	}
-
-	const setupResult = await standardSetup(sketchUri);
-
-	if (!setupResult) {
-		return;
-	}
-
-	const {
-		buildTargetUri,
-		workspaceUri,
-	} = setupResult;
-
-	if (!workspaceUri) {
-		return;
-	}
-
-	const { diagramUri, tomlUri } = await getSketchSimFileUris(sketchUri);
-	const tempSimDirUri = vscode.Uri.joinPath(workspaceUri, '.wokwi', 'temp', 'config');
-
-	await vscode.workspace.fs.createDirectory(tempSimDirUri);
-
-	const tempDiagramUri = vscode.Uri.joinPath(tempSimDirUri, 'diagram.json');
-	const tempTomlUri = vscode.Uri.joinPath(tempSimDirUri, 'wokwi.toml');
-
-	await vscode.workspace.fs.copy(diagramUri, tempDiagramUri, { overwrite: true });
-	await vscode.workspace.fs.copy(tomlUri, tempTomlUri, { overwrite: true });
-
-	const diagram = await readWorkspaceFile(tempDiagramUri);
-
-	const firmwarePaths = await getAbsoluteFirmwarePaths(buildTargetUri, sketchUri, simIsEsp32(diagram));
-
-	if (!firmwarePaths) {
-		return;
-	}
-
-	const { hexPath, elfPath } = firmwarePaths;
-	await updateToml(
-		tempTomlUri,
-		getRelativePath(tempSimDirUri, hexPath),
-		getRelativePath(tempSimDirUri, elfPath),
-	);
-}
-
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -1284,8 +1237,6 @@ export function activate(context: vscode.ExtensionContext) {
 			const activeSketch = args || vscode.window.activeTextEditor?.document.uri;
 
 			const portConfig = await getSerialProxyConfig(activeSketch);
-
-			await createTempWokwiSimulationFiles(activeSketch);
 
 			const hadActiveSim = !!await getWokwiSimulatorTab();
 
@@ -1391,8 +1342,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (getConfig().get("autoConfigureWokwiTomlFirmwarePathOnSketchOpen")) {
-				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri, false);
-				await createTempWokwiSimulationFiles(sketchUri);
+				await configureWokwiTomlFirmwarePaths(buildTargetUri, sketchUri);
 			}
 		}));
 
